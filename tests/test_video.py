@@ -1,3 +1,4 @@
+from array import array
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,7 @@ import pytest
 from video_builder_publisher.video import (
     VIDEO_PROFILES,
     VideoSpec,
+    _frame_payload,
     atomic_video_target,
     resolve_video_spec,
 )
@@ -31,6 +33,20 @@ def test_video_spec_rejects_invalid_values() -> None:
         VideoSpec(1920, 1080, 0)
     with pytest.raises(ValueError):
         VideoSpec(1920, 1080, 30, crf=99)
+
+
+def test_frame_payload_reuses_contiguous_buffer_without_copy() -> None:
+    frame = array("B", range(12))
+    payload = _frame_payload(frame, 12)
+    assert isinstance(payload, memoryview)
+    assert payload.obj is frame
+    assert payload.tobytes() == bytes(range(12))
+
+
+def test_frame_payload_rejects_wrong_byte_size() -> None:
+    frame = array("I", [1, 2, 3])
+    with pytest.raises(ValueError, match="frame byte size"):
+        _frame_payload(frame, 3)
 
 
 def test_atomic_video_target_replaces_only_on_success(tmp_path: Path) -> None:
