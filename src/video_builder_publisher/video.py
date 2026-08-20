@@ -233,12 +233,46 @@ def mux_audio_track(
     return target_path
 
 
+def _frame_payload(frame, expected_nbytes: int):
+    """Return packed frame bytes, zero-copy when the buffer is C-contiguous."""
+
+    try:
+        view = memoryview(frame)
+    except TypeError:
+        if not hasattr(frame, "tobytes"):
+            raise TypeError("Frame must expose the buffer protocol or tobytes().") from None
+        payload = frame.tobytes()
+        if len(payload) != expected_nbytes:
+            raise ValueError(
+                f"Unexpected frame byte size {len(payload)}; expected {expected_nbytes}."
+            )
+        return payload
+
+    if view.nbytes != expected_nbytes:
+        raise ValueError(f"Unexpected frame byte size {view.nbytes}; expected {expected_nbytes}.")
+
+    if view.c_contiguous:
+        try:
+            return view.cast("B")
+        except TypeError:
+            pass
+
+    if hasattr(frame, "tobytes"):
+        payload = frame.tobytes()
+    else:
+        payload = view.tobytes()
+    if len(payload) != expected_nbytes:
+        raise ValueError(f"Unexpected packed frame size {len(payload)}; expected {expected_nbytes}.")
+    return payload
+
+
 class RawVideoEncoder:
     """Stream packed BGR24 frames to FFmpeg with atomic publication."""
 
     def __init__(self, target: str | Path, spec: VideoSpec) -> None:
         self.target = Path(target)
         self.spec = spec
+        self._frame_nbytes = spec.width * spec.height * 3
         self._context = atomic_video_target(self.target)
         self._temp_path = self._context.__enter__()
         ffmpeg = _ensure_tool("ffmpeg")
@@ -288,7 +322,7 @@ class RawVideoEncoder:
             raise ValueError(
                 f"Unexpected frame shape {getattr(frame, 'shape', None)}; expected {expected_shape}."
             )
-        self._proc.stdin.write(frame.tobytes())
+        self._proc.stdin.write(_frame_payload(frame, self._frame_nbytes))
 
     def close(self, *, min_duration: float = 0.0) -> None:
         if self._closed:
