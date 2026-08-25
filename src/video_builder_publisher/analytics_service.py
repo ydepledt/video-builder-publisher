@@ -34,7 +34,8 @@ class AnalyticsCollector:
 
     Applications provide credentials/client construction plus an ``AnalyticsProfile``.
     The collector owns the common publication-target sync, checkpoint assignment,
-    retention collection and failure isolation.
+    retention collection and failure isolation. ``scope_key=None`` means all scopes,
+    which is useful for generators that publish multiple charts/regions from one store.
     """
 
     def __init__(
@@ -43,7 +44,7 @@ class AnalyticsCollector:
         store: AnalyticsStore,
         publication_source: PublicationAnalyticsSource,
         profile: AnalyticsProfile,
-        scope_key: str,
+        scope_key: str | None,
         supported_platforms: Iterable[str],
         client_factory: Callable[[str], AnalyticsClient],
         is_configured: Callable[[str], bool],
@@ -82,25 +83,35 @@ class AnalyticsCollector:
         self._validate_platforms([platform])
         self.sync(run_key=run_key)
         inferred = published_at
+        resolved_scope = self.scope_key
         existing = self.store.get_target(run_key, platform)
-        if inferred is None and existing is not None:
-            inferred = existing.published_at
-        if inferred is None:
+        if existing is not None:
+            resolved_scope = existing.scope_key
+            if inferred is None:
+                inferred = existing.published_at
+
+        if inferred is None or resolved_scope is None:
             rows = self.publication_source.targets(
                 scope_key=self.scope_key,
                 run_key=run_key,
                 platforms=[platform],
             )
             if rows:
-                inferred = rows[0].published_at
+                resolved_scope = rows[0].scope_key
+                if inferred is None:
+                    inferred = rows[0].published_at
+
         if inferred is None:
             raise RuntimeError(
                 "Publication timestamp is unknown. Supply a timezone-aware published_at."
             )
+        if resolved_scope is None:
+            raise RuntimeError("Publication scope is unknown for manual analytics linking.")
+
         normalized = _aware_timestamp(inferred)
         self.store.link_target(
             run_key,
-            self.scope_key,
+            resolved_scope,
             platform,
             external_id,
             normalized,
