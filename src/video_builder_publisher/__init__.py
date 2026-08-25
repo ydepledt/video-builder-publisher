@@ -20,6 +20,7 @@ from .analytics_platforms import (
     YouTubeAnalyticsConfig,
     authorize_youtube_analytics,
 )
+from .analytics_service import AnalyticsCollector
 from .publishing import (
     InstagramConfig,
     InstagramPublisher,
@@ -49,6 +50,7 @@ from .video import (
 __all__ = [
     "DEFAULT_CHECKPOINT_HOURS",
     "VIDEO_PROFILES",
+    "AnalyticsCollector",
     "AnalyticsError",
     "AnalyticsProfile",
     "AnalyticsStore",
