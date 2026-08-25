@@ -1,5 +1,25 @@
-"""Shared video building and publication primitives."""
+"""Shared video building, publication and analytics primitives."""
 
+from .analytics import (
+    DEFAULT_CHECKPOINT_HOURS,
+    AnalyticsProfile,
+    AnalyticsStore,
+    AnalyticsTarget,
+    ContentContext,
+    MetricSnapshot,
+    PublicationAnalyticsSource,
+    PublicationAnalyticsTarget,
+)
+from .analytics_platforms import (
+    AnalyticsError,
+    InstagramAnalyticsClient,
+    InstagramAnalyticsConfig,
+    TikTokAnalyticsClient,
+    TikTokAnalyticsConfig,
+    YouTubeAnalyticsClient,
+    YouTubeAnalyticsConfig,
+    authorize_youtube_analytics,
+)
 from .publishing import (
     InstagramConfig,
     InstagramPublisher,
@@ -27,9 +47,20 @@ from .video import (
 )
 
 __all__ = [
+    "DEFAULT_CHECKPOINT_HOURS",
     "VIDEO_PROFILES",
+    "AnalyticsError",
+    "AnalyticsProfile",
+    "AnalyticsStore",
+    "AnalyticsTarget",
+    "ContentContext",
+    "InstagramAnalyticsClient",
+    "InstagramAnalyticsConfig",
     "InstagramConfig",
     "InstagramPublisher",
+    "MetricSnapshot",
+    "PublicationAnalyticsSource",
+    "PublicationAnalyticsTarget",
     "PublishError",
     "PublishQueue",
     "PublishResult",
@@ -37,13 +68,18 @@ __all__ = [
     "Publisher",
     "RawVideoEncoder",
     "RunRecord",
+    "TikTokAnalyticsClient",
+    "TikTokAnalyticsConfig",
     "TikTokConfig",
     "TikTokPublisher",
     "VideoSpec",
+    "YouTubeAnalyticsClient",
+    "YouTubeAnalyticsConfig",
     "YouTubeConfig",
     "YouTubePublisher",
     "atomic_video_target",
     "authorize_youtube",
+    "authorize_youtube_analytics",
     "build_publisher",
     "mux_audio_track",
     "probe_video",

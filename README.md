@@ -1,20 +1,22 @@
 # Video Builder Publisher
 
-Shared Python primitives for **building, validating, queueing and publishing generated videos**.
+Shared Python primitives for **building, validating, queueing, publishing and measuring generated videos**.
 
-This repository keeps media/output infrastructure out of individual content projects such as `shazam` and `satisfying-ball-game`.
+This repository keeps media/output infrastructure out of individual content projects such as `shazam`, `live-stats`/EarthPulse and future generators.
 
-The package deliberately contains **no domain-specific content logic**: no Shazam charts, no satisfying-ball physics, no content-selection rules.
+The package deliberately contains **no domain-specific content logic**: no Shazam chart rules, no earthquake scoring, no project-specific editorial policy.
 
 ## Package layout
 
 ```text
 video_builder_publisher/
-├── video.py       # profiles, FFmpeg streaming, atomic MP4, ffprobe, audio mux
-├── security.py    # secret files, redaction, URL allow-lists, locks, atomic writes
-├── queue.py       # immutable SHA-256 artifact queue
-├── store.py       # generic SQLite run/platform publication state
-└── publishing.py  # YouTube, TikTok and Instagram adapters
+├── video.py                # profiles, FFmpeg streaming, atomic MP4, ffprobe, audio mux
+├── security.py             # secrets, redaction, URL allow-lists, locks, atomic writes
+├── queue.py                # immutable SHA-256 artifact queue
+├── store.py                # generic SQLite run/platform publication state
+├── publishing.py           # YouTube, TikTok and Instagram upload adapters
+├── analytics.py            # normalized metrics, checkpoints, retention, SQLite state
+└── analytics_platforms.py  # YouTube/TikTok/Instagram analytics adapters
 ```
 
 The dependency direction is intentional:
@@ -22,15 +24,17 @@ The dependency direction is intentional:
 ```text
 project-specific content
         |
+        |  AnalyticsProfile / ContentContext
         v
 video_builder_publisher
         |
         +--> render / validate
         +--> queue / integrity
         +--> publish / recover
+        +--> collect / normalize / checkpoint performance
 ```
 
-Projects remain responsible for **what** to render. This package owns the reusable mechanics for **how** a finished media artifact is produced and safely published.
+Projects remain responsible for **what** to render and which custom dimensions describe the content. This package owns the reusable mechanics for **how** media is produced, safely published and measured.
 
 ## Install
 
@@ -42,7 +46,7 @@ python -m pip install -e .
 # Development
 python -m pip install -e '.[dev]'
 
-# YouTube OAuth/upload support
+# YouTube upload + analytics OAuth support
 python -m pip install -e '.[youtube]'
 ```
 
@@ -112,11 +116,7 @@ from video_builder_publisher.publishing import (
 YouTubePublisher(
     YouTubeConfig(token_file=Path("~/.config/app/youtube-token.json").expanduser())
 )
-
-TikTokPublisher(
-    TikTokConfig(access_token="...")
-)
-
+TikTokPublisher(TikTokConfig(access_token="..."))
 InstagramPublisher(
     InstagramConfig(
         access_token="...",
@@ -126,9 +126,79 @@ InstagramPublisher(
 )
 ```
 
-Application projects may still read secrets from environment variables or Docker secrets; they should do so in their own config/adaptation layer and pass the resulting values to this package.
+Application projects may read secrets from environment variables or Docker secrets in their own adaptation layer and pass the resulting values here.
 
 TikTok unattended Direct Post remains intentionally disabled; the reusable publisher supports creator-inbox/draft upload unless a separate interactive consent flow is implemented.
+
+## Shared analytics
+
+The analytics layer deliberately separates **global platform metrics** from **generator-specific dimensions**.
+
+Global normalized metrics live here:
+
+```text
+views
+engaged_views
+likes
+comments
+shares
+saves
+reach
+total_interactions
+watch_time_seconds
+average_view_duration_seconds
+average_view_percentage
+skip_rate
+retention curve
+1h / 6h / 24h / 7d checkpoints
+```
+
+A generator only supplies context through an `AnalyticsProfile`:
+
+```python
+from video_builder_publisher.analytics import (
+    AnalyticsProfile,
+    ContentContext,
+)
+
+class MyProfile(AnalyticsProfile):
+    def build_context(self, publication, manifest):
+        manifest = manifest or {}
+        return ContentContext(
+            run_key=publication.run_key,
+            scope_key=publication.scope_key,
+            run_date=publication.run_date,
+            title=manifest.get("title"),
+            content_format=publication.content_format,
+            duration_seconds=manifest.get("duration_seconds"),
+            dimensions={
+                "experiment": manifest.get("experiment"),
+                "content_category": manifest.get("category"),
+            },
+        )
+```
+
+EarthPulse can therefore add earthquake/story dimensions, while Shazam can add chart/track/format dimensions, with no copy of the platform collectors or metric schema.
+
+The persistent analytics database is separate from publication state:
+
+```text
+state/
+├── publication.sqlite  # remote publication state machine
+└── analytics.sqlite    # performance history and checkpoints
+```
+
+Both files belong to persistent runtime state and should **not** be committed to Git.
+
+`PublicationAnalyticsSource` imports published/submitted targets from the generic publication schema. `AnalyticsStore` records immutable first-successful checkpoints and raw cumulative snapshots. Custom dimensions are stored as JSON so adding a project-specific field does not require a shared schema migration.
+
+### Platform analytics adapters
+
+- YouTube combines the Data API for fast public counters with YouTube Analytics for engaged views, watch time and retention.
+- TikTok queries the final numeric video id; draft upload ids are intentionally not guessed/matched.
+- Instagram normalizes Reel insights when those metrics are exposed by the account/API version.
+
+Missing metrics remain `NULL`/`None`; the shared layer never invents cross-platform equivalence.
 
 ## Security model
 
