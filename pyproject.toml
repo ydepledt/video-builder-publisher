@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "video-builder-publisher"
-version = "0.1.1"
-description = "Shared primitives for building, validating, queueing and publishing generated videos."
+version = "0.2.0"
+description = "Shared primitives for building, validating, queueing, publishing and measuring generated videos."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
