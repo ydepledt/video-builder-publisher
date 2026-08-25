@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from video_builder_publisher import (
@@ -93,6 +93,41 @@ def _publication(path: Path, artifact: Path) -> None:
         )
 
 
+def _add_publication(
+    path: Path,
+    *,
+    run_key: str,
+    scope_key: str,
+    artifact: Path,
+    external_id: str,
+    status: str = "published",
+) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO runs(run_key,scope_key,run_date,status,content_format,artifact_path,started_at) VALUES(?,?,?,?,?,?,?)",
+            (
+                run_key,
+                scope_key,
+                "2026-08-25",
+                "completed",
+                "daily",
+                str(artifact),
+                "2026-08-25T09:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO publications(run_key,platform,status,attempts,external_id,updated_at) VALUES(?,?,?,?,?,?)",
+            (
+                run_key,
+                "youtube",
+                status,
+                1,
+                external_id,
+                "2026-08-25T10:00:00+00:00",
+            ),
+        )
+
+
 def test_collector_owns_sync_collect_checkpoints_and_retention(tmp_path: Path) -> None:
     folder = tmp_path / "queue" / "published" / "run"
     folder.mkdir(parents=True)
@@ -170,3 +205,96 @@ def test_collector_skips_unconfigured_platform(tmp_path: Path) -> None:
     assert result["collected"] == 0
     assert result["skipped"] == 1
     assert result["errors"]
+
+
+def test_collector_with_no_scope_collects_all_publication_scopes(tmp_path: Path) -> None:
+    first_folder = tmp_path / "queue" / "published" / "world"
+    first_folder.mkdir(parents=True)
+    first_artifact = first_folder / "video.mp4"
+    first_artifact.write_bytes(b"world")
+    (first_folder / "manifest.json").write_text(
+        json.dumps({"title": "World", "kind": "top"}), encoding="utf-8"
+    )
+
+    second_folder = tmp_path / "queue" / "published" / "fr"
+    second_folder.mkdir(parents=True)
+    second_artifact = second_folder / "video.mp4"
+    second_artifact.write_bytes(b"fr")
+    (second_folder / "manifest.json").write_text(
+        json.dumps({"title": "France", "kind": "battle"}), encoding="utf-8"
+    )
+
+    publication_db = tmp_path / "publication.sqlite"
+    _publication(publication_db, first_artifact)
+    _add_publication(
+        publication_db,
+        run_key="country:FR|2026-08-25",
+        scope_key="country:FR",
+        artifact=second_artifact,
+        external_id="fr-remote-id",
+    )
+
+    collector = AnalyticsCollector(
+        store=AnalyticsStore(tmp_path / "analytics.sqlite"),
+        publication_source=PublicationAnalyticsSource(publication_db),
+        profile=Profile(),
+        scope_key=None,
+        supported_platforms=("youtube",),
+        client_factory=lambda platform: Client(),
+        is_configured=lambda platform: True,
+    )
+    result = collector.collect(observed_at="2026-08-26T10:05:00+00:00")
+
+    assert result["scope_key"] is None
+    assert result["eligible_targets"] == 2
+    assert result["collected"] == 2
+    scopes = {row["scope_key"] for row in collector.report()}
+    assert scopes == {"scope", "country:FR"}
+
+
+def test_manual_link_with_no_scope_recovers_scope_from_publication(tmp_path: Path) -> None:
+    folder = tmp_path / "queue" / "submitted" / "fr"
+    folder.mkdir(parents=True)
+    artifact = folder / "video.mp4"
+    artifact.write_bytes(b"fr")
+    publication_db = tmp_path / "publication.sqlite"
+    _publication(publication_db, artifact)
+
+    with sqlite3.connect(publication_db) as conn:
+        conn.execute(
+            "UPDATE runs SET run_key=?, scope_key=? WHERE run_key=?",
+            ("country:FR|2026-08-25", "country:FR", "scope|2026-08-25"),
+        )
+        conn.execute(
+            "UPDATE publications SET run_key=?, status=?, external_id=? WHERE run_key=?",
+            (
+                "country:FR|2026-08-25",
+                "draft_uploaded",
+                "draft~id",
+                "scope|2026-08-25",
+            ),
+        )
+
+    store = AnalyticsStore(tmp_path / "analytics.sqlite")
+    collector = AnalyticsCollector(
+        store=store,
+        publication_source=PublicationAnalyticsSource(publication_db),
+        profile=Profile(),
+        scope_key=None,
+        supported_platforms=("youtube",),
+        client_factory=lambda platform: Client(),
+        is_configured=lambda platform: True,
+        requires_manual_link=lambda publication: True,
+    )
+
+    result = collector.link_target(
+        "country:FR|2026-08-25",
+        "youtube",
+        "final-id",
+    )
+    target = store.get_target("country:FR|2026-08-25", "youtube")
+
+    assert result["published_at"] == "2026-08-25T10:00:00+00:00"
+    assert target is not None
+    assert target.scope_key == "country:FR"
+    assert target.external_id == "final-id"
