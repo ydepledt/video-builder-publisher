@@ -79,8 +79,26 @@ class PublicationStore:
         return f"{scope_key}|{run_date.isoformat()}"
 
     def begin_run(self, scope_key: str, run_date: date, force: bool = False) -> str:
+        return self.begin_named_run(self.run_key(scope_key, run_date), scope_key, run_date, force=force)
+
+    def begin_named_run(
+        self,
+        run_key: str,
+        scope_key: str,
+        run_date: date,
+        *,
+        force: bool = False,
+    ) -> str:
+        """Begin a logical run whose identity is not restricted to one item per day."""
+
+        key = run_key.strip()
+        scope = scope_key.strip()
+        if not key:
+            raise ValueError("run_key cannot be empty")
+        if not scope:
+            raise ValueError("scope_key cannot be empty")
+
         self.initialize()
-        key = self.run_key(scope_key, run_date)
         now = _now()
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -98,10 +116,11 @@ class PublicationStore:
                 conn.execute(
                     """
                     UPDATE runs
-                    SET status='running', started_at=?, completed_at=NULL, error=NULL
+                    SET scope_key=?, run_date=?, status='running', started_at=?,
+                        completed_at=NULL, error=NULL
                     WHERE run_key=?
                     """,
-                    (now, key),
+                    (scope, run_date.isoformat(), now, key),
                 )
             else:
                 conn.execute(
@@ -109,7 +128,7 @@ class PublicationStore:
                     INSERT INTO runs(run_key, scope_key, run_date, status, started_at)
                     VALUES (?, ?, ?, 'running', ?)
                     """,
-                    (key, scope_key, run_date.isoformat(), now),
+                    (key, scope, run_date.isoformat(), now),
                 )
         return key
 

@@ -22,6 +22,7 @@ from .analytics_platforms import (
 )
 from .analytics_service import AnalyticsCollector
 from .analytics_worker import DEFAULT_ANALYTICS_INTERVAL_MINUTES, run_periodic_analytics
+from .publication_service import PublicationArtifact, PublicationService
 from .publishing import (
     InstagramConfig,
     InstagramPublisher,
@@ -65,6 +66,8 @@ __all__ = [
     "MetricSnapshot",
     "PublicationAnalyticsSource",
     "PublicationAnalyticsTarget",
+    "PublicationArtifact",
+    "PublicationService",
     "PublishError",
     "PublishQueue",
     "PublishResult",
