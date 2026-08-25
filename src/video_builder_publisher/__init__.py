@@ -21,6 +21,7 @@ from .analytics_platforms import (
     authorize_youtube_analytics,
 )
 from .analytics_service import AnalyticsCollector
+from .analytics_worker import DEFAULT_ANALYTICS_INTERVAL_MINUTES, run_periodic_analytics
 from .publishing import (
     InstagramConfig,
     InstagramPublisher,
@@ -48,6 +49,7 @@ from .video import (
 )
 
 __all__ = [
+    "DEFAULT_ANALYTICS_INTERVAL_MINUTES",
     "DEFAULT_CHECKPOINT_HOURS",
     "VIDEO_PROFILES",
     "AnalyticsCollector",
@@ -86,5 +88,6 @@ __all__ = [
     "mux_audio_track",
     "probe_video",
     "resolve_video_spec",
+    "run_periodic_analytics",
     "validate_video",
 ]
