@@ -10,9 +10,9 @@ from .analytics import (
     PublicationAnalyticsSource,
     PublicationAnalyticsTarget,
 )
+from .analytics_instagram import InstagramAnalyticsClient
 from .analytics_platforms import (
     AnalyticsError,
-    InstagramAnalyticsClient,
     InstagramAnalyticsConfig,
     TikTokAnalyticsClient,
     TikTokAnalyticsConfig,
