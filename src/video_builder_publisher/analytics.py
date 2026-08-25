@@ -1,17 +1,12 @@
-"""Shared analytics primitives for generated-video publishers.
-
-This module owns platform-neutral performance state. Generator projects provide a
-small ``AnalyticsProfile`` that maps their immutable publication manifest to
-custom content dimensions; common metrics never belong to a generator.
-"""
+"""Shared, platform-neutral analytics primitives for generated videos."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -75,12 +70,7 @@ class ContentContext:
 
 
 class AnalyticsProfile(ABC):
-    """Generator-specific manifest-to-dimensions adapter.
-
-    Subclasses should extract only content/business dimensions. Views, likes,
-    comments, shares, watch time, retention and checkpoints are intentionally
-    owned by the shared analytics core.
-    """
+    """Generator-specific manifest → content-dimensions adapter."""
 
     @abstractmethod
     def build_context(
@@ -88,11 +78,12 @@ class AnalyticsProfile(ABC):
         publication: PublicationAnalyticsTarget,
         manifest: dict[str, Any] | None,
     ) -> ContentContext:
+        """Return only generator-specific context; common metrics stay shared."""
         raise NotImplementedError
 
 
 class PublicationAnalyticsSource:
-    """Read publication targets from the generic PublicationStore SQLite schema."""
+    """Read analytics targets from the generic PublicationStore schema."""
 
     def __init__(self, publication_db: str | Path) -> None:
         self.path = Path(publication_db)
@@ -107,48 +98,23 @@ class PublicationAnalyticsSource:
     ) -> list[PublicationAnalyticsTarget]:
         if not self.path.is_file():
             return []
-
-        clauses: list[str] = []
-        params: list[Any] = []
-        selected_statuses = tuple(dict.fromkeys(statuses))
+        selected_statuses = frozenset(str(value) for value in statuses)
+        selected_platforms = frozenset(str(value) for value in (platforms or ()))
         if not selected_statuses:
             return []
-        placeholders = ",".join("?" for _ in selected_statuses)
-        clauses.append(f"p.status IN ({placeholders})")
-        params.extend(selected_statuses)
-        if scope_key:
-            clauses.append("r.scope_key=?")
-            params.append(scope_key)
-        if run_key:
-            clauses.append("p.run_key=?")
-            params.append(run_key)
-        selected_platforms = tuple(dict.fromkeys(platforms or ()))
-        if selected_platforms:
-            placeholders = ",".join("?" for _ in selected_platforms)
-            clauses.append(f"p.platform IN ({placeholders})")
-            params.extend(selected_platforms)
 
         conn: sqlite3.Connection | None = None
         try:
             conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=10.0)
             rows = conn.execute(
-                f"""
+                """
                 SELECT
-                    p.run_key,
-                    r.scope_key,
-                    r.run_date,
-                    p.platform,
-                    p.status,
-                    p.external_id,
-                    p.updated_at,
-                    r.artifact_path,
-                    r.content_format
+                    p.run_key, r.scope_key, r.run_date, p.platform, p.status,
+                    p.external_id, p.updated_at, r.artifact_path, r.content_format
                 FROM publications p
                 JOIN runs r ON r.run_key=p.run_key
-                WHERE {' AND '.join(clauses)}
                 ORDER BY p.updated_at DESC
-                """,
-                params,
+                """
             ).fetchall()
         except sqlite3.Error as exc:
             raise RuntimeError("Unable to read publication analytics targets") from exc
@@ -156,10 +122,24 @@ class PublicationAnalyticsSource:
             if conn is not None:
                 conn.close()
 
-        return [PublicationAnalyticsTarget(*row) for row in rows]
+        result: list[PublicationAnalyticsTarget] = []
+        for row in rows:
+            target = PublicationAnalyticsTarget(*row)
+            if target.status not in selected_statuses:
+                continue
+            if scope_key and target.scope_key != scope_key:
+                continue
+            if run_key and target.run_key != run_key:
+                continue
+            if selected_platforms and target.platform not in selected_platforms:
+                continue
+            result.append(target)
+        return result
 
     @staticmethod
-    def load_manifest(target: PublicationAnalyticsTarget) -> tuple[dict[str, Any] | None, str | None]:
+    def load_manifest(
+        target: PublicationAnalyticsTarget,
+    ) -> tuple[dict[str, Any] | None, str | None]:
         if not target.artifact_path:
             return None, None
         path = Path(target.artifact_path).parent / "manifest.json"
@@ -173,7 +153,7 @@ class PublicationAnalyticsSource:
 
 
 class AnalyticsStore:
-    """Persistent normalized performance history shared by all generators."""
+    """Persistent normalized performance history shared by every generator."""
 
     def __init__(
         self,
@@ -362,7 +342,7 @@ class AnalyticsStore:
         scope_key: str | None = None,
         run_key: str | None = None,
         platforms: Iterable[str] | None = None,
-        requires_manual_link: callable | None = None,
+        requires_manual_link: Callable[[PublicationAnalyticsTarget], bool] | None = None,
     ) -> dict[str, int]:
         publications = source.targets(scope_key=scope_key, run_key=run_key, platforms=platforms)
         linked = 0
@@ -371,16 +351,7 @@ class AnalyticsStore:
             manifest, manifest_path = source.load_manifest(publication)
             context = profile.build_context(publication, manifest)
             if context.manifest_path is None and manifest_path:
-                context = ContentContext(
-                    run_key=context.run_key,
-                    scope_key=context.scope_key,
-                    run_date=context.run_date,
-                    title=context.title,
-                    content_format=context.content_format,
-                    duration_seconds=context.duration_seconds,
-                    dimensions=context.dimensions,
-                    manifest_path=manifest_path,
-                )
+                context = replace(context, manifest_path=manifest_path)
             self.upsert_context(context)
             remote_id = str(publication.external_id or "").strip()
             if not remote_id or (requires_manual_link and requires_manual_link(publication)):
@@ -423,32 +394,27 @@ class AnalyticsStore:
         platforms: Iterable[str] | None = None,
     ) -> list[AnalyticsTarget]:
         self.initialize()
-        clauses: list[str] = []
-        params: list[Any] = []
-        if run_key:
-            clauses.append("t.run_key=?")
-            params.append(run_key)
-        if scope_key:
-            clauses.append("t.scope_key=?")
-            params.append(scope_key)
-        selected = tuple(dict.fromkeys(platforms or ()))
-        if selected:
-            placeholders = ",".join("?" for _ in selected)
-            clauses.append(f"t.platform IN ({placeholders})")
-            params.extend(selected)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        selected_platforms = frozenset(str(value) for value in (platforms or ()))
         with self._connect() as conn:
             rows = conn.execute(
-                f"""
+                """
                 SELECT t.run_key, t.scope_key, t.platform, t.external_id, t.published_at,
                        t.source, c.duration_seconds
                 FROM targets t LEFT JOIN content_context c ON c.run_key=t.run_key
-                {where}
                 ORDER BY t.published_at DESC, t.platform
-                """,
-                params,
+                """
             ).fetchall()
-        return [AnalyticsTarget(*row) for row in rows]
+        result: list[AnalyticsTarget] = []
+        for row in rows:
+            target = AnalyticsTarget(*row)
+            if run_key and target.run_key != run_key:
+                continue
+            if scope_key and target.scope_key != scope_key:
+                continue
+            if selected_platforms and target.platform not in selected_platforms:
+                continue
+            result.append(target)
+        return result
 
     def insert_snapshot(
         self,
@@ -457,11 +423,12 @@ class AnalyticsStore:
         snapshot: MetricSnapshot,
     ) -> tuple[int, list[int]]:
         self.initialize()
-        observed = _parse_aware(observed_at)
+        normalized_observed = _aware_timestamp(observed_at)
+        observed = _parse_aware(normalized_observed)
         published = _parse_aware(target.published_at)
         age_seconds = max(0, int((observed - published).total_seconds()))
         raw = json.dumps(snapshot.raw_metrics or {}, sort_keys=True, separators=(",", ":"))
-        values = (
+        metrics = (
             snapshot.views,
             snapshot.engaged_views,
             snapshot.likes,
@@ -506,16 +473,16 @@ class AnalyticsStore:
                     target.run_key,
                     target.platform,
                     target.external_id,
-                    _aware_timestamp(observed_at),
+                    normalized_observed,
                     age_seconds,
                     snapshot.status,
-                    *values,
+                    *metrics,
                     raw,
                 ),
             )
             row = conn.execute(
                 "SELECT id FROM snapshots WHERE run_key=? AND platform=? AND observed_at=?",
-                (target.run_key, target.platform, _aware_timestamp(observed_at)),
+                (target.run_key, target.platform, normalized_observed),
             ).fetchone()
             if row is None:
                 raise RuntimeError("analytics snapshot insert could not be read back")
@@ -650,18 +617,40 @@ class AnalyticsStore:
     @staticmethod
     def _report_row(row: tuple[Any, ...]) -> dict[str, Any]:
         keys = (
-            "run_key", "scope_key", "platform", "checkpoint_hours", "observed_at",
-            "age_seconds", "views", "engaged_views", "likes", "comments", "shares",
-            "saves", "reach", "total_interactions", "watch_time_seconds",
-            "average_view_duration_seconds", "average_view_percentage", "skip_rate",
-            "run_date", "title", "content_format", "duration_seconds", "dimensions_json",
+            "run_key",
+            "scope_key",
+            "platform",
+            "checkpoint_hours",
+            "observed_at",
+            "age_seconds",
+            "views",
+            "engaged_views",
+            "likes",
+            "comments",
+            "shares",
+            "saves",
+            "reach",
+            "total_interactions",
+            "watch_time_seconds",
+            "average_view_duration_seconds",
+            "average_view_percentage",
+            "skip_rate",
+            "run_date",
+            "title",
+            "content_format",
+            "duration_seconds",
+            "dimensions_json",
         )
         data = dict(zip(keys, row, strict=True))
         data["observed_age_hours"] = round(int(data.pop("age_seconds") or 0) / 3600, 3)
         data["dimensions"] = json.loads(data.pop("dimensions_json") or "{}")
-        actions = sum(int(data.get(name) or 0) for name in ("likes", "comments", "shares", "saves"))
+        actions = sum(
+            int(data.get(name) or 0) for name in ("likes", "comments", "shares", "saves")
+        )
         views = data.get("views")
-        data["engagement_rate"] = actions / int(views) if views is not None and int(views) > 0 else None
+        data["engagement_rate"] = (
+            actions / int(views) if views is not None and int(views) > 0 else None
+        )
         return data
 
     def retention_report(
@@ -671,24 +660,24 @@ class AnalyticsStore:
         platform: str = "youtube",
     ) -> list[dict[str, Any]]:
         self.initialize()
-        clauses = ["platform=?"]
-        params: list[Any] = [platform]
-        if run_key:
-            clauses.append("run_key=?")
-            params.append(run_key)
         with self._connect() as conn:
             rows = conn.execute(
-                f"""
+                """
                 SELECT run_key, platform, checkpoint_hours, elapsed_ratio,
                        audience_watch_ratio, relative_retention_performance
-                FROM retention_points WHERE {' AND '.join(clauses)}
+                FROM retention_points
+                WHERE platform=? AND (? IS NULL OR run_key=?)
                 ORDER BY run_key DESC, checkpoint_hours, elapsed_ratio
                 """,
-                params,
+                (platform, run_key, run_key),
             ).fetchall()
         keys = (
-            "run_key", "platform", "checkpoint_hours", "elapsed_ratio",
-            "audience_watch_ratio", "relative_retention_performance",
+            "run_key",
+            "platform",
+            "checkpoint_hours",
+            "elapsed_ratio",
+            "audience_watch_ratio",
+            "relative_retention_performance",
         )
         return [dict(zip(keys, row, strict=True)) for row in rows]
 
