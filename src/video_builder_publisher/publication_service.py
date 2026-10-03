@@ -159,8 +159,10 @@ class PublicationService:
             for platform in selected:
                 if not self.store.begin_platform(run_key, platform):
                     continue
+                publish_started = False
                 try:
                     publisher = self.publisher_factory(platform)
+                    publish_started = True
                     result = publisher.publish(artifact, title, description)
                 except PublishError as exc:
                     if exc.outcome_uncertain:
@@ -175,7 +177,12 @@ class PublicationService:
                         self.store.record_platform_failure(run_key, platform, str(exc))
                     errors[platform] = str(exc)
                 except Exception as exc:
-                    self.store.record_platform_failure(run_key, platform, str(exc))
+                    if publish_started:
+                        # An unclassified exception cannot prove that remote I/O failed.
+                        # Only an explicit PublishError may declare a safe retry.
+                        self.store.finish_platform(run_key, platform, "unknown", error=str(exc))
+                    else:
+                        self.store.record_platform_failure(run_key, platform, str(exc))
                     errors[platform] = str(exc)
                 else:
                     self.store.finish_platform(

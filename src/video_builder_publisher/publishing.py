@@ -420,23 +420,31 @@ class TikTokPublisher:
                     secret_values=(self.token,),
                 )
             except PublishError as exc:
-                if exc.retryable:
-                    raise _uncertain(
-                        "TikTok",
-                        str(exc),
-                        external_id=publish_id,
-                        secret_values=(self.token,),
-                    ) from exc
-                raise
+                # The upload has already been accepted. Failure to read its status
+                # is not evidence that the upload failed, even for a 4xx response.
+                raise _uncertain(
+                    "TikTok",
+                    str(exc),
+                    external_id=publish_id,
+                    secret_values=(self.token,),
+                ) from exc
 
-            if payload.get("error", {}).get("code") not in {None, "ok"}:
-                raise PublishError(
-                    f"TikTok status failed: {payload.get('error')}",
+            error = payload.get("error", {})
+            if not isinstance(error, dict) or error.get("code") not in (None, "ok"):
+                raise _uncertain(
+                    "TikTok",
+                    f"status lookup failed: {error}",
+                    external_id=publish_id,
                     secret_values=(self.token,),
                 )
             data = payload.get("data", {})
             if not isinstance(data, dict):
-                raise PublishError("TikTok status returned invalid data.")
+                raise _uncertain(
+                    "TikTok",
+                    "status returned invalid data",
+                    external_id=publish_id,
+                    secret_values=(self.token,),
+                )
             last_status = str(data.get("status", "UNKNOWN"))
             if last_status in accepted:
                 return last_status
@@ -555,11 +563,23 @@ class InstagramPublisher:
                 external_id=container_id,
                 secret_values=(self.token,),
             )
-        published = _check_response(
-            publish_response,
-            "Instagram",
-            secret_values=(self.token,),
-        )
+        try:
+            published = _check_response(
+                publish_response,
+                "Instagram",
+                secret_values=(self.token,),
+            )
+        except PublishError as exc:
+            if publish_response.status_code >= 400:
+                raise
+            # A successful HTTP acknowledgement may have published the Reel even
+            # if its body is malformed. Keep the container id for reconciliation.
+            raise _uncertain(
+                "Instagram",
+                str(exc),
+                external_id=container_id,
+                secret_values=(self.token,),
+            ) from exc
         media_id = str(published.get("id") or "")
         if not media_id:
             raise _uncertain(

@@ -93,6 +93,8 @@ Each logical run receives its own directory. Artifacts are SHA-256 checked befor
 
 - `publishing` is written immediately before remote I/O;
 - a process crash while publishing is recovered as `unknown`;
+- unexpected publisher exceptions and unreadable post-upload acknowledgements are
+  also treated as `unknown`, requiring manual/API verification before retrying;
 - successful/submitted/draft/unknown results are not blindly retried;
 - per-platform attempts and external IDs are persisted in SQLite.
 
