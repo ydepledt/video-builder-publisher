@@ -1,11 +1,13 @@
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from video_builder_publisher.publication_service import (
     PublicationArtifact,
     PublicationService,
 )
-from video_builder_publisher.publishing import PublishResult
+from video_builder_publisher.publishing import PublishError, PublishResult
 from video_builder_publisher.queue import PublishQueue
 from video_builder_publisher.store import PublicationStore
 
@@ -72,3 +74,80 @@ def test_stage_is_idempotent_for_same_bytes(tmp_path: Path) -> None:
     second = service.stage(artifact)
     assert first["sha256"] == second["sha256"]
     assert second["queue_state"] == "needs_review"
+
+
+def stage_test_artifact(tmp_path: Path, publisher_factory) -> tuple[PublicationService, str]:
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"offline-test-video")
+    service = PublicationService(
+        store=PublicationStore(tmp_path / "publication.sqlite"),
+        queue=PublishQueue(tmp_path / "queue"),
+        publisher_factory=publisher_factory,
+    )
+    artifact = PublicationArtifact(
+        run_key="test|ambiguous-upload",
+        scope_key="test",
+        run_date=date(2026, 8, 25),
+        content_format="test.v1",
+        selection_signature="sig",
+        video_path=video,
+        manifest={"title": "Test"},
+    )
+    service.stage(artifact)
+    return service, artifact.run_key
+
+
+class FailingPublisher(FakePublisher):
+    def __init__(self, error: Exception) -> None:
+        super().__init__("youtube")
+        self.error = error
+
+    def publish(self, video: Path, title: str, description: str) -> PublishResult:
+        super().publish(video, title, description)
+        # A remote upload may already have completed before response handling fails.
+        raise self.error
+
+
+def test_unexpected_publish_exception_is_not_retried(tmp_path: Path) -> None:
+    publisher = FailingPublisher(RuntimeError("response processing failed"))
+    other_publisher = FakePublisher("instagram")
+    publishers = {"youtube": publisher, "instagram": other_publisher}
+    service, run_key = stage_test_artifact(tmp_path, publishers.__getitem__)
+
+    for _ in range(2):
+        result = service.publish(run_key, publishers, approved=True)
+        assert result["platforms"] == {"youtube": "unknown", "instagram": "published"}
+        assert result["run_status"] == "needs_review"
+        assert result["queue_state"] == "needs_review"
+    assert len(publisher.calls) == 1
+    assert len(other_publisher.calls) == 1
+
+
+def test_publisher_factory_failure_can_be_retried(tmp_path: Path) -> None:
+    publisher = FakePublisher("youtube")
+    attempts = []
+
+    def factory(platform: str):
+        attempts.append(platform)
+        if len(attempts) == 1:
+            raise ValueError("publisher configuration is missing")
+        return publisher
+
+    service, run_key = stage_test_artifact(tmp_path, factory)
+    first = service.publish(run_key, ["youtube"], approved=True)
+    assert first["platforms"] == {"youtube": "failed"}
+    second = service.publish(run_key, ["youtube"], approved=True)
+    assert second["platforms"] == {"youtube": "published"}
+    assert len(publisher.calls) == 1
+
+
+@pytest.mark.parametrize("uncertain, status, calls", [(False, "failed", 2), (True, "unknown", 1)])
+def test_explicit_publish_error_controls_retry(
+    tmp_path: Path, uncertain: bool, status: str, calls: int
+) -> None:
+    publisher = FailingPublisher(PublishError("upload failed", outcome_uncertain=uncertain))
+    service, run_key = stage_test_artifact(tmp_path, lambda platform: publisher)
+    for _ in range(2):
+        result = service.publish(run_key, ["youtube"], approved=True)
+        assert result["platforms"] == {"youtube": status}
+    assert len(publisher.calls) == calls
